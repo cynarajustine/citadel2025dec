@@ -546,42 +546,54 @@ def lra_fair_aggregate(local_models, prev_global_state, sigma=0.05, gamma=0.95):
     return new_state
 
 def citadel_aggregate(local_models, prev_global_state, tau=1.0, sigma=0.05, gamma=0.95):
-    """Trust + Noise + Temporal smoothing AGAINST PREVIOUS GLOBAL state"""
+    """
+    ✅ FIXED CITADEL:  Proper distance normalization + layer-wise std noise
+    - Normalize distances by LAYER NORM (not global norm)
+    - Scale sigma by layer std for stability
+    - Smooth towards previous global state
+    """
     keys = local_models[0].keys()
     new_state = {}
-
+    
     for k in keys:
         if not torch.is_floating_point(local_models[0][k]):
             new_state[k] = prev_global_state[k]. clone()
             continue
-
-        vals = torch.stack([m[k].float() for m in local_models])
-        mean_val = vals. mean(dim=0)
-
-        # Trust weighting
+        
+        # Stack all client updates
+        vals = torch.stack([m[k]. float() for m in local_models if torch.is_floating_point(m[k])])
+        mean_val = vals.mean(dim=0)
+        
+        # ✅ FIX 1: Normalize distances per-layer (not globally)
         diffs = vals - mean_val
         flat = diffs.reshape(diffs.size(0), -1)
         distances = torch.linalg.norm(flat, dim=1)
-        scale = mean_val.norm().clamp_min(1e-12)
-        distances = (distances / scale)
-        distances = distances - distances.min()
-        weights = torch.softmax(-distances / max(tau, 1e-6), dim=0)
-
+        
+        # Layer-wise normalization
+        layer_norm = torch.linalg.norm(mean_val.reshape(-1))
+        if layer_norm > 1e-12:
+            distances = distances / layer_norm
+        
+        # ✅ FIX 2:  Softmax weights (more stable than exp)
+        distances = distances - distances.min()  # shift for stability
+        weights = torch. softmax(-distances / max(tau, 1e-6), dim=0)
+        
         # Weighted aggregate
         wv = weights.view(-1, *([1] * (vals.dim() - 1)))
         aggregated = (wv * vals).sum(dim=0)
-
-        # Add noise (but not to BN running stats)
-        if ("running_mean" not in k) and ("running_var" not in k) and sigma > 0:
+        
+        # ✅ FIX 3: Layer-wise noise (scaled by std)
+        if (("running_mean" not in k) and ("running_var" not in k) and sigma > 0):
             layer_std = vals.std(dim=0, unbiased=False)
-            aggregated = aggregated + sigma * layer_std * torch.randn_like(aggregated)
-
-        # ✅ KEY FIX: Smooth towards PREVIOUS GLOBAL, not client 0
-        prev_val = prev_global_state[k].to(aggregated.device).float()
+            # Scale noise by layer std for stability
+            noise = sigma * torch.clamp(layer_std, min=1e-8) * torch.randn_like(aggregated)
+            aggregated = aggregated + noise
+        
+        # ✅ FIX 4: Smooth towards PREVIOUS global
+        prev_val = prev_global_state[k]. to(aggregated.device).float()
         new_state[k] = (gamma * prev_val + (1 - gamma) * aggregated).clone()
-
+    
     return new_state
-
 def get_aggregation_fn(mode):
     """✅ FIXED: Return functions with correct signatures (prev_global_state passed to all)"""
     aggregation_map = {
@@ -670,60 +682,69 @@ def train_local(model, loader, device, lr, smoke=False, local_epochs=1):
     return copy.deepcopy({k: v.detach().cpu() for k, v in model.state_dict().items()})
 
 def evaluate(model, loader, device, attack=None):
-    """Enhanced evaluation with per-class metrics, calibration, confusion matrix."""
+    """Enhanced evaluation with per-class metrics and confusion matrix."""
+    from sklearn.metrics import confusion_matrix, precision_recall_fscore_support
+    
     model.eval()
-    all_preds, all_labels = [], []
-    logits_list = []
-
-    for x, y in loader: 
+    all_preds, all_labels, logits_list = [], [], []
+    
+    for x, y in loader:
         y = y.to(device)
         x = x.to(device) if isinstance(x, torch.Tensor) else {k: v.to(device) for k, v in x.items()}
-
+        
+        # Apply attack if specified
         if attack == "fgsm":
             x = fgsm_attack(model, x, y)
         elif attack == "pgd":
             x = pgd_attack(model, x, y)
-
+        
+        # Forward pass
         with torch.no_grad():
-            out = model(x) if isinstance(x, torch. Tensor) else model(**x)
-
+            out = model(x) if isinstance(x, torch.Tensor) else model(**x)
+        
         preds = out.argmax(dim=1).cpu().numpy()
         all_preds.extend(preds)
         all_labels.extend(y.cpu().numpy())
-        logits_list.append(out. detach().cpu())
-
+        logits_list.append(out.detach().cpu())
+    
     all_preds = np.array(all_preds)
     all_labels = np.array(all_labels)
     logits = torch.cat(logits_list, dim=0)
-
-    # Base metrics
+    
+    # ✅ Base metrics
     acc = accuracy_score(all_labels, all_preds)
     f1 = f1_score(all_labels, all_preds, average='macro', zero_division=0)
     prec = precision_score(all_labels, all_preds, average='macro', zero_division=0)
     rec = recall_score(all_labels, all_preds, average='macro', zero_division=0)
-
-    # Per-class metrics
-    p_per_cls, r_per_cls, f_per_cls, _ = precision_recall_fscore_support(
+    
+    # ✅ Per-class metrics (NEW)
+    p_per_class, r_per_class, f_per_class, _ = precision_recall_fscore_support(
         all_labels, all_preds, average=None, zero_division=0
     )
-
-    # Expected Calibration Error (ECE)
+    
+    # ✅ Confusion matrix (NEW)
+    conf_matrix = confusion_matrix(all_labels, all_preds).tolist()
+    
+    # ✅ Expected Calibration Error (NEW)
     probs = torch.softmax(logits, dim=1).numpy()
     max_probs = probs.max(axis=1)
     ece = np.mean(np.abs(max_probs - (all_preds == all_labels).astype(float)))
-
+    
+    # ✅ Robustness metrics
+    asr = float(1 - acc) if attack else 0.0
+    
     return {
         "accuracy": float(acc),
         "f1": float(f1),
         "precision": float(prec),
         "recall": float(rec),
-        "ASR": float(1 - acc) if attack else 0.0,
+        "ASR": asr,
         "ece": float(ece),
-        "per_class_f1": f_per_cls. tolist(),
-        "per_class_precision": p_per_cls.tolist(),
-        "per_class_recall": r_per_cls.tolist(),
+        "per_class_f1": f_per_class. tolist(),
+        "per_class_precision": p_per_class.tolist(),
+        "per_class_recall": r_per_class.tolist(),
+        "confusion_matrix": conf_matrix,  # NEW
     }
-
 # --------------------------
 # Experiment Runner
 # --------------------------
@@ -732,65 +753,60 @@ def run_experiment(args):
     device = torch.device(args.device)
     set_seed(args.seed)
 
-    # Load data and model
-    train_loader, test_loader = get_data(args.dataset, args.batch_size)
+    train_loader, test_loader = get_data(args. dataset, args.batch_size)
     model = get_model(args.dataset).to(device)
 
-    # Load tuned params ONLY if NOT explicitly passed
+    # Load best hyperparams if not provided
     if args.tau is None or args.sigma is None or args.gamma is None:
         best_params = load_best_hyperparams(args.dataset)
-        if args.tau is None:
-            args.tau = best_params. get("tau", 1.0)
-        if args.sigma is None:
-            args.sigma = best_params.get("sigma", 0.05)
-        if args.gamma is None:
-            args.gamma = best_params. get("gamma", 0.95)
+        if args.tau is None: args.tau = best_params. get("tau", 1.0)
+        if args.sigma is None: args.sigma = best_params. get("sigma", 0.05)
+        if args.gamma is None: args.gamma = best_params.get("gamma", 0.95)
         print(f"🌐 Using tuned hyperparameters: τ={args.tau}, σ={args.sigma}, γ={args.gamma}")
-    else:
-        print(f"🌐 Using provided hyperparameters: τ={args.tau}, σ={args. sigma}, γ={args.gamma}")
-
+    
     print(f"🔄 Mode: {args.mode} | Attack: {args.attack}")
     aggregation_fn = get_aggregation_fn(args.mode)
 
     hist = []
-
-    # ✅ CRITICAL FIX: Initialize and track previous global state across rounds
     prev_global_state = copy.deepcopy({k: v.detach().cpu() for k, v in model.state_dict().items()})
 
     for r in range(args.rounds):
-        # Local client updates
+        # Local training
         local_models = [
             train_local(model, train_loader, device, args.lr, smoke=args.smoke, local_epochs=getattr(args, 'local_epochs', 1))
             for _ in range(args.num_clients)
         ]
 
-        # ✅ CRITICAL FIX: Pass prev_global_state to aggregation function
+        # Aggregation with FIXED citadel_aggregate
         agg_state = aggregation_fn(
             local_models,
-            prev_global_state,  # ← NOW PASSED! 
+            prev_global_state,
             tau=args.tau,
             sigma=args.sigma,
             gamma=args.gamma
         )
-
-        # Load aggregated state and update previous global
+        
         model.load_state_dict({k: v.to(device) if torch.is_tensor(v) else v for k, v in agg_state.items()})
         prev_global_state = copy.deepcopy({k: v.detach().cpu() if torch.is_tensor(v) else v for k, v in agg_state.items()})
 
-        # Evaluation (clean + attacked)
+        # ✅ Enhanced evaluation
         clean_metrics = evaluate(model, test_loader, device)
         adv_metrics = evaluate(model, test_loader, device, attack=args.attack)
-
+        
+        # ✅ NEW: Per-client fairness
+        fairness = evaluate_per_client(model, test_loader, device, attack=args.attack)
+        
         asr = adv_metrics. get("ASR", 0.0)
         robustness_score = compute_robustness_score(clean_metrics, adv_metrics, asr)
 
-        # Save extended metrics
+        # ✅ Extended history logging
         hist.append({
             "round": r,
             "clean":  clean_metrics,
             "attack": adv_metrics,
             "asr": asr,
             "robustness_score": robustness_score,
+            "fairness": fairness,  # NEW
             "timestamp": time.time(),
             "hyperparams": {
                 "tau": args.tau,
@@ -798,60 +814,34 @@ def run_experiment(args):
                 "gamma": args.gamma,
                 "num_clients": args.num_clients,
                 "batch_size": args.batch_size,
-                "local_epochs": getattr(args, 'local_epochs', 1),
             }
         })
 
-        # Save checkpoint
+        # Checkpoint
         ckpt_dir = os.path.join(args.save_dir, args.dataset, args.attack, args.mode, "checkpoints")
         ensure_dir(ckpt_dir)
-        ckpt_path = os.path.join(ckpt_dir, f"round_{r}.pt")
-        torch.save(model.state_dict(), ckpt_path)
-
-        # Keep only last 2 checkpoints
-        ckpts = sorted([f for f in os.listdir(ckpt_dir) if f.endswith(".pt")])
+        torch.save(model.state_dict(), os.path.join(ckpt_dir, f"round_{r}.pt"))
+        
+        # Keep last 2 checkpoints
+        ckpts = sorted([f for f in os.listdir(ckpt_dir) if f.endswith(". pt")])
         if len(ckpts) > 2:
-            os.remove(os.path.join(ckpt_dir, ckpts[0]))
+            os.remove(os. path.join(ckpt_dir, ckpts[0]))
 
         print(
             f"[{args.dataset}|{args.mode}|{args.attack}] Round {r} - "
-            f"Acc: {clean_metrics['accuracy']:.3f}, F1: {clean_metrics['f1']:.3f}, "
-            f"Adv F1: {adv_metrics['f1']:.3f}, ASR: {asr:.3f}, "
-            f"Score:  {robustness_score:.3f}"  # ✅ FIXED
+            f"Clean Acc: {clean_metrics['accuracy']:.3f}, "
+            f"Adv F1: {adv_metrics['f1']:.3f}, "
+            f"ASR: {asr:.3f}, "
+            f"Score: {robustness_score:. 3f}, "
+            f"Fairness (Gini): {fairness['gini']:.3f}"
         )
 
-    # Save final run history
+    # Save history
     hist_path = os.path.join(args.save_dir, args.dataset, args.attack, args.mode, "history.json")
     ensure_dir(os.path.dirname(hist_path))
     save_json(hist, hist_path)
 
-    # Save tuning metrics
-    results_path = os.path.join(
-        args.save_dir,
-        "tuning",
-        f"{args.dataset}_tau{args.tau}_sigma{args. sigma}_gamma{args.gamma}. json"
-    )
-    ensure_dir(os.path.dirname(results_path))
-    try:
-        if hist:
-            final_metrics = hist[-1]
-            metrics_summary = {
-                "tau": args.tau,
-                "sigma":  args.sigma,
-                "gamma": args.gamma,
-                "clean_acc": final_metrics. get("clean", {}).get("accuracy", 0),
-                "clean_f1": final_metrics. get("clean", {}).get("f1", 0),
-                "attack_acc": final_metrics.get("attack", {}).get("accuracy", 0),
-                "attack_f1": final_metrics. get("attack", {}).get("f1", 0),
-                "asr": final_metrics. get("asr", 0),
-                "robustness_score": final_metrics.get("robustness_score", 0),
-            }
-            with open(results_path, "w") as f:
-                json. dump(metrics_summary, f, indent=2)
-            print(f"💾 Saved tuning metrics to {results_path}")
-    except Exception as e:
-        print(f"⚠️ Could not save tuning metrics: {e}")
-
+    print(f"✅ Saved:  {hist_path}")
 # --------------------------
 # Main
 # --------------------------
