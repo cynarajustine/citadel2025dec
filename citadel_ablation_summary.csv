@@ -1,0 +1,2 @@
+dataset,attack,mode,clean_accuracy,clean_f1,clean_precision,clean_recall,attack_accuracy,attack_f1,attack_precision,attack_recall,ASR,robustness_score,rounds
+vqa,fgsm,citadel,0.39,0.38381900688567505,0.48854921638570764,0.3910742659045418,0.105,0.03213022585607546,0.4098740554156171,0.10728560079238977,0.895,0.0,12

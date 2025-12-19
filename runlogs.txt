@@ -1,0 +1,28 @@
+(base) ktu-f22668@HPCSRV:~/11exp/2025dec9citadel7$ python citadel_fl_v2.py   --dataset cifar10 --attack fgsm --mode citadel   --rounds 20 --num_clients 10 --batch_size 128 --local_epochs 2   --tau 3 --sigma 0.01 --gamma 0.9 --save_dir results_citadel_v2 | tee 12122025run.txt
+🌐 Using provided hyperparameters: τ=3.0, σ=0.01, γ=0.9
+🔄 Mode: citadel | Attack: fgsm
+[cifar10|citadel|fgsm] Round 0 - Acc: 0.169, F1: 0.133, Adv F1: 0.005, ASR: 0.991, Score:  0.000
+[cifar10|citadel|fgsm] Round 1 - Acc: 0.275, F1: 0.256, Adv F1: 0.011, ASR: 0.979, Score:  0.000
+[cifar10|citadel|fgsm] Round 2 - Acc: 0.362, F1: 0.350, Adv F1: 0.020, ASR: 0.964, Score:  0.000
+[cifar10|citadel|fgsm] Round 3 - Acc: 0.436, F1: 0.428, Adv F1: 0.031, ASR: 0.952, Score:  0.000
+[cifar10|citadel|fgsm] Round 4 - Acc: 0.493, F1: 0.490, Adv F1: 0.032, ASR: 0.951, Score:  0.024
+[cifar10|citadel|fgsm] Round 5 - Acc: 0.534, F1: 0.531, Adv F1: 0.032, ASR: 0.952, Score:  0.045
+[cifar10|citadel|fgsm] Round 6 - Acc: 0.573, F1: 0.572, Adv F1: 0.037, ASR: 0.950, Score:  0.067
+[cifar10|citadel|fgsm] Round 7 - Acc: 0.609, F1: 0.610, Adv F1: 0.038, ASR: 0.950, Score:  0.086
+[cifar10|citadel|fgsm] Round 8 - Acc: 0.646, F1: 0.648, Adv F1: 0.042, ASR: 0.949, Score:  0.107
+[cifar10|citadel|fgsm] Round 9 - Acc: 0.675, F1: 0.678, Adv F1: 0.044, ASR: 0.948, Score:  0.123
+[cifar10|citadel|fgsm] Round 10 - Acc: 0.701, F1: 0.705, Adv F1: 0.047, ASR: 0.946, Score:  0.137
+[cifar10|citadel|fgsm] Round 11 - Acc: 0.726, F1: 0.731, Adv F1: 0.049, ASR: 0.946, Score:  0.151
+[cifar10|citadel|fgsm] Round 12 - Acc: 0.750, F1: 0.754, Adv F1: 0.050, ASR: 0.946, Score:  0.163
+[cifar10|citadel|fgsm] Round 13 - Acc: 0.768, F1: 0.772, Adv F1: 0.052, ASR: 0.944, Score:  0.174
+[cifar10|citadel|fgsm] Round 14 - Acc: 0.779, F1: 0.783, Adv F1: 0.055, ASR: 0.942, Score:  0.182
+[cifar10|citadel|fgsm] Round 15 - Acc: 0.791, F1: 0.794, Adv F1: 0.056, ASR: 0.942, Score:  0.188
+[cifar10|citadel|fgsm] Round 16 - Acc: 0.802, F1: 0.804, Adv F1: 0.058, ASR: 0.941, Score:  0.195
+[cifar10|citadel|fgsm] Round 17 - Acc: 0.812, F1: 0.813, Adv F1: 0.060, ASR: 0.940, Score:  0.201
+[cifar10|citadel|fgsm] Round 18 - Acc: 0.819, F1: 0.820, Adv F1: 0.061, ASR: 0.939, Score:  0.206
+[cifar10|citadel|fgsm] Round 19 - Acc: 0.825, F1: 0.826, Adv F1: 0.062, ASR: 0.938, Score:  0.209
+💾 Saved tuning metrics to results_citadel_v2/tuning/cifar10_tau3.0_sigma0.01_gamma0.9. json
+✅ Metrics written successfully → results_citadel_v2/cifar10/fgsm/citadel/history.json
+
+
+=============
